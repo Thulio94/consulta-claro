@@ -1,13 +1,14 @@
 import argparse
 import gzip
-import io
 import os
 import sqlite3
 import sys
 import time
 from pathlib import Path
-import urllib.request
-import urllib.error
+import requests
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT_DIR / "data"
@@ -30,63 +31,62 @@ def checkpoint_wal(db_path: Path) -> None:
         conn = sqlite3.connect(db_path)
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.close()
-        print("Checkpoint WAL concluido com sucesso.")
+        print("Checkpoint WAL concluído com sucesso.")
     except Exception as exc:
         print(f"Aviso ao executar checkpoint WAL: {exc}")
 
 
-class GzipStreamReader(io.RawIOBase):
-    """Streams a file compressed on-the-fly with gzip to avoid writing large temporary files to disk."""
+def generate_compressed_stream(source_path: Path, block_size: int = 256 * 1024):
+    total_raw_bytes = source_path.stat().st_size
+    raw_read = 0
+    compressed_sent = 0
+    start_time = time.time()
+    last_print = 0
 
-    def __init__(self, source_path: Path, block_size: int = 256 * 1024):
-        self.source_file = source_path.open("rb")
-        self.total_raw_bytes = source_path.stat().st_size
-        self.raw_read = 0
-        self.block_size = block_size
-        self.compressor = gzip.GzipFile(fileobj=self._BufferWriter(self), mode="wb")
-        self.out_buffer = bytearray()
-        self.eof_reached = False
-
-    class _BufferWriter:
-        def __init__(self, parent):
-            self.parent = parent
-
-        def write(self, data):
-            self.parent.out_buffer.extend(data)
-
-    def readable(self):
-        return True
-
-    def readinto(self, b):
-        while len(self.out_buffer) < len(b) and not self.eof_reached:
-            chunk = self.source_file.read(self.block_size)
+    with source_path.open("rb") as f:
+        # We can use gzip compressor in memory
+        compressor = gzip.compressobj(level=6, method=gzip.DEFLATED, wbits=31)
+        while True:
+            chunk = f.read(block_size)
             if not chunk:
-                self.eof_reached = True
-                self.compressor.close()
                 break
-            self.raw_read += len(chunk)
-            self.compressor.write(chunk)
-            self.compressor.flush()
+            raw_read += len(chunk)
+            data = compressor.compress(chunk)
+            if data:
+                compressed_sent += len(data)
+                now = time.time()
+                if now - last_print >= 0.5 or raw_read >= total_raw_bytes:
+                    pct = (raw_read / total_raw_bytes) * 100
+                    elapsed = max(0.1, now - start_time)
+                    speed_mb = (compressed_sent / (1024 * 1024)) / elapsed
+                    print(
+                        f"\rProgresso: {pct:5.1f}% | Lido: {raw_read / (1024*1024):.1f} MB | "
+                        f"Enviado (Gzip): {compressed_sent / (1024*1024):.1f} MB | {speed_mb:.2f} MB/s",
+                        end="",
+                        flush=True,
+                    )
+                    last_print = now
+                yield data
 
-        if not self.out_buffer:
-            return 0
+        data = compressor.flush()
+        if data:
+            compressed_sent += len(data)
+            yield data
 
-        to_read = min(len(b), len(self.out_buffer))
-        b[:to_read] = self.out_buffer[:to_read]
-        del self.out_buffer[:to_read]
-        return to_read
-
-    def close(self):
-        self.source_file.close()
-        super().close()
+    print(f"\nCompactação e streaming finalizados: {compressed_sent / (1024*1024):.1f} MB enviados.")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Upload do banco de dados SQLite para o servidor remoto.")
     parser.add_argument(
         "--url",
-        default="https://claro.thconect.com.br/api/admin/restore-database",
+        default="https://169.58.168.174/api/admin/restore-database",
         help="URL do endpoint de restore",
+    )
+    parser.add_argument(
+        "--host",
+        default="claro.thconect.com.br",
+        help="Header Host para o Traefik",
     )
     parser.add_argument(
         "--secret",
@@ -114,66 +114,32 @@ def main():
 
     total_size = db_file.stat().st_size
     print(f"Tamanho original do banco: {total_size / (1024 * 1024):.2f} MB")
-    print(f"Iniciando streaming comprimido para: {args.url}")
+    print(f"Destino: {args.url} (Host: {args.host})")
 
-    stream_reader = GzipStreamReader(db_file)
-    start_time = time.time()
-
-    class ProgressStream(io.RawIOBase):
-        def __init__(self, reader, total_raw):
-            self.reader = reader
-            self.total_raw = total_raw
-            self.compressed_sent = 0
-            self.last_print = 0
-
-        def readable(self):
-            return True
-
-        def readinto(self, b):
-            n = self.reader.readinto(b)
-            if n:
-                self.compressed_sent += n
-                now = time.time()
-                if now - self.last_print >= 0.5 or self.reader.raw_read >= self.total_raw:
-                    pct = (self.reader.raw_read / self.total_raw) * 100
-                    elapsed = max(0.1, now - start_time)
-                    speed_mb = (self.compressed_sent / (1024 * 1024)) / elapsed
-                    print(
-                        f"\rProgresso: {pct:5.1f}% | Lido: {self.reader.raw_read / (1024*1024):.1f} MB | "
-                        f"Enviado (Gzip): {self.compressed_sent / (1024*1024):.1f} MB | {speed_mb:.2f} MB/s",
-                        end="",
-                        flush=True,
-                    )
-                    self.last_print = now
-            return n
-
-    progress_stream = ProgressStream(stream_reader, total_size)
-    req = urllib.request.Request(
-        args.url,
-        data=progress_stream,
-        headers={
-            "X-Migration-Secret": secret,
-            "Content-Type": "application/octet-stream",
-            "Content-Encoding": "gzip",
-        },
-        method="POST",
-    )
+    headers = {
+        "X-Migration-Secret": secret,
+        "Host": args.host,
+        "Content-Type": "application/octet-stream",
+    }
 
     try:
-        with urllib.request.urlopen(req, timeout=600) as response:
-            print("\n")
-            print("Status code:", response.status)
-            body = response.read().decode("utf-8")
-            print("Resposta do servidor:", body)
-            print("Migração concluída com sucesso!")
-    except urllib.error.HTTPError as err:
-        print(f"\nErro HTTP {err.code}: {err.read().decode('utf-8')}")
-        sys.exit(1)
+        r = requests.post(
+            args.url,
+            data=generate_compressed_stream(db_file),
+            headers=headers,
+            verify=False,
+            timeout=1800,
+        )
+        print("Status code:", r.status_code)
+        print("Resposta do servidor:", r.text)
+        if r.status_code == 200:
+            print("\n*** Banco de dados restaurado e verificado com sucesso no Easypanel! ***")
+        else:
+            print("\n*** Erro na restauração do banco de dados ***")
+            sys.exit(1)
     except Exception as err:
-        print(f"\nErro durante upload: {err}")
+        print(f"\nErro durante a transmissão: {err}")
         sys.exit(1)
-    finally:
-        stream_reader.close()
 
 
 if __name__ == "__main__":
