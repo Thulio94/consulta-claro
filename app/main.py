@@ -1,11 +1,11 @@
 import asyncio
 import base64
-import gzip
 import json
 import secrets
 import shutil
 import sqlite3
 import tempfile
+import zlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -101,12 +101,16 @@ async def restore_database(request: Request):
     temp_target = DB_PATH.with_suffix(".restoring")
 
     try:
-        decompressor = gzip.GzipDecompressor()
+        decompressor = zlib.decompressobj(31)
         with temp_target.open("wb") as output:
             async for chunk in request.stream():
                 if chunk:
-                    output.write(decompressor.decompress(chunk))
-            output.write(decompressor.flush())
+                    data = decompressor.decompress(chunk)
+                    if data:
+                        output.write(data)
+            remaining = decompressor.flush()
+            if remaining:
+                output.write(remaining)
 
         conn = sqlite3.connect(temp_target)
         try:
