@@ -53,7 +53,7 @@ app = FastAPI(
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
-    if not AUTH_ENABLED or path in {"/api/health", "/api/admin/restore-database"}:
+    if not AUTH_ENABLED or path == "/api/health" or path.startswith("/api/admin/"):
         return await call_next(request)
 
     auth_header = request.headers.get("Authorization")
@@ -86,6 +86,90 @@ async def index():
 @app.get("/api/health")
 async def health():
     return {"ok": True, "database": database.DB_PATH.exists(), "api_keys": len(API_KEYS)}
+
+
+@app.post("/api/admin/upload-chunk")
+async def upload_chunk(
+    request: Request,
+    chunk_index: int = Query(...),
+    session_id: str = Query(...),
+):
+    secret = request.headers.get("X-Migration-Secret", "").strip()
+    if not MIGRATION_SECRET_KEY or not secrets.compare_digest(secret, MIGRATION_SECRET_KEY):
+        raise HTTPException(status_code=401, detail="Chave de migração inválida ou não configurada.")
+
+    chunk_dir = DB_PATH.parent / "restore_chunks" / session_id
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    chunk_path = chunk_dir / f"chunk_{chunk_index:05d}.bin"
+
+    body = await request.body()
+    chunk_path.write_bytes(body)
+    return {"ok": True, "chunk_index": chunk_index, "bytes_received": len(body)}
+
+
+@app.post("/api/admin/finish-restore")
+async def finish_restore(
+    request: Request,
+    total_chunks: int = Query(...),
+    session_id: str = Query(...),
+):
+    secret = request.headers.get("X-Migration-Secret", "").strip()
+    if not MIGRATION_SECRET_KEY or not secrets.compare_digest(secret, MIGRATION_SECRET_KEY):
+        raise HTTPException(status_code=401, detail="Chave de migração inválida ou não configurada.")
+
+    if job_manager.task and not job_manager.task.done():
+        raise HTTPException(status_code=409, detail="Existe um processamento ativo. Pause-o antes de restaurar o banco.")
+
+    chunk_dir = DB_PATH.parent / "restore_chunks" / session_id
+    if not chunk_dir.exists():
+        raise HTTPException(status_code=400, detail="Diretório de chunks não encontrado.")
+
+    temp_target = DB_PATH.with_suffix(".restoring")
+    try:
+        decompressor = zlib.decompressobj(31)
+        with temp_target.open("wb") as output:
+            for idx in range(total_chunks):
+                chunk_path = chunk_dir / f"chunk_{idx:05d}.bin"
+                if not chunk_path.exists():
+                    raise ValueError(f"Chunk {idx} ausente.")
+                data = chunk_path.read_bytes()
+                decomp = decompressor.decompress(data)
+                if decomp:
+                    output.write(decomp)
+            rem = decompressor.flush()
+            if rem:
+                output.write(rem)
+
+        conn = sqlite3.connect(temp_target)
+        try:
+            cur = conn.cursor()
+            cur.execute("PRAGMA integrity_check")
+            integrity = cur.fetchone()[0]
+            if integrity != "ok":
+                raise ValueError(f"Integridade do SQLite falhou: {integrity}")
+            cur.execute("SELECT COUNT(*) FROM registros")
+            count = cur.fetchone()[0]
+        finally:
+            conn.close()
+
+        for ext in ["", "-wal", "-shm"]:
+            target_file = DB_PATH.parent / f"{DB_PATH.name}{ext}" if ext else DB_PATH
+            target_file.unlink(missing_ok=True)
+
+        temp_target.replace(DB_PATH)
+        database.init_db()
+
+        shutil.rmtree(chunk_dir, ignore_errors=True)
+
+        return {
+            "ok": True,
+            "message": "Banco de dados restaurado com sucesso via chunks.",
+            "total_registros": count,
+            "size_bytes": DB_PATH.stat().st_size,
+        }
+    except Exception as exc:
+        temp_target.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Erro ao processar chunks: {exc}") from exc
 
 
 @app.post("/api/admin/restore-database")
