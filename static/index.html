@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Consulta Claro V2</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">CLARO // API CONTROL</div>
+      <h1>Consulta Claro <span>V2</span></h1>
+    </div>
+    <div class="top-status">
+      <span id="serverDot" class="status-dot"></span>
+      <span id="serverStatus">Conectando</span>
+      <span class="local-pill">LOCALHOST</span>
+    </div>
+  </header>
+
+  <nav class="tabs" aria-label="Navegação principal">
+    <button class="tab active" data-target="dashboard">Visão geral</button>
+    <button class="tab" data-target="import">Importar CSV</button>
+    <button class="tab" data-target="manual">Consulta manual</button>
+    <button class="tab" data-target="mass">Consulta massiva</button>
+    <button class="tab" data-target="results">Resultados</button>
+    <button class="tab" data-target="export">Exportação</button>
+    <button class="tab" data-target="settings">Configurações</button>
+  </nav>
+
+  <main>
+    <section id="dashboard" class="view active">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">Banco independente</p>
+          <h2>Visão geral</h2>
+        </div>
+        <button class="ghost-btn" id="refreshDashboard">Atualizar</button>
+      </div>
+      <div class="metric-grid" id="dashboardMetrics">
+        <article class="metric-card"><span>Total</span><strong id="mTotal">—</strong></article>
+        <article class="metric-card success"><span>Consultados</span><strong id="mConsulted">—</strong></article>
+        <article class="metric-card pending"><span>Pendentes</span><strong id="mPending">—</strong></article>
+        <article class="metric-card warning"><span>Aguardando retry</span><strong id="mRetry">—</strong></article>
+        <article class="metric-card danger"><span>Erros permanentes</span><strong id="mErrors">—</strong></article>
+        <article class="metric-card"><span>Tecnologias</span><strong id="mTech">—</strong></article>
+      </div>
+      <div class="panel split-panel">
+        <div>
+          <p class="panel-label">Último trabalho</p>
+          <h3 id="lastJobStatus">Nenhum trabalho na V2</h3>
+          <p class="muted" id="lastJobMessage">A consulta atual da V1 não é controlada por este painel.</p>
+        </div>
+        <div class="snapshot">
+          <span>Resultados estruturados</span>
+          <strong id="mStructured">—</strong>
+        </div>
+      </div>
+    </section>
+
+    <section id="import" class="view">
+      <div class="section-heading">
+        <div><p class="kicker">Entrada em lotes</p><h2>Importar CSV</h2></div>
+      </div>
+      <div class="panel form-panel">
+        <label class="file-drop" for="csvFile">
+          <input id="csvFile" type="file" accept=".csv,text/csv">
+          <strong>Escolha o arquivo CSV</strong>
+          <span>O arquivo será lido em blocos e duplicatas serão ignoradas.</span>
+        </label>
+        <div class="form-grid two">
+          <label>Coluna CEP<select id="cepColumn"><option>Selecione o arquivo</option></select></label>
+          <label>Coluna número<select id="numeroColumn"><option>Selecione o arquivo</option></select></label>
+        </div>
+        <button class="primary-btn" id="importButton" disabled>Importar registros</button>
+        <div id="importResult" class="inline-result"></div>
+      </div>
+    </section>
+
+    <section id="manual" class="view">
+      <div class="section-heading">
+        <div><p class="kicker">Prioridade alta</p><h2>Consulta manual</h2></div>
+      </div>
+      <div class="real-warning">Esta ação consumirá a API real. Não existe modo de simulação.</div>
+      <div class="panel form-panel">
+        <div class="form-grid two">
+          <label>CEP<input id="manualCep" inputmode="numeric" maxlength="9" placeholder="00000000"></label>
+          <label>Número<input id="manualNumero" maxlength="100" placeholder="123"></label>
+        </div>
+        <button class="primary-btn" id="manualButton">Consultar API real</button>
+        <pre id="manualResult" class="response-box">Aguardando uma consulta.</pre>
+      </div>
+    </section>
+
+    <section id="mass" class="view">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">Processamento persistente</p>
+          <h2>Consulta massiva</h2>
+        </div>
+        <div id="jobBadge" class="job-badge">SEM TRABALHO</div>
+      </div>
+      <div class="real-warning">Este processamento consumirá a API real. Feche a execução da V1 antes de iniciar.</div>
+
+      <div class="panel control-panel">
+        <div class="config-line">
+          <label>Threads
+            <input id="massThreads" type="range" min="1" max="10" value="2">
+            <strong id="massThreadsValue">2</strong>
+          </label>
+          <label>Requisições por segundo
+            <div class="input-suffix"><input id="massRps" type="number" min="0.1" max="1000" step="0.1" value="2"><span>req/s</span></div>
+          </label>
+          <label>Espera mínima por robô
+            <div class="input-suffix"><input id="massRobotDelay" type="number" min="0" max="60000" step="100" value="1000"><span>ms</span></div>
+          </label>
+          <label class="check-line"><input id="massAdaptive" type="checkbox" checked><span>Proteção adaptativa</span></label>
+          <label class="check-line"><input id="includeRetry" type="checkbox"><span>Incluir retries aguardando</span></label>
+        </div>
+        <div class="throughput-line">
+          <span>Teto escolhido</span><strong id="estimatedRps">2,00 req/s</strong>
+          <span id="riskNotice" class="risk-notice"></span>
+        </div>
+        <div class="button-row">
+          <button class="primary-btn" id="startJob">Iniciar API real</button>
+          <button class="secondary-btn" id="pauseJob" disabled>Pausar</button>
+          <button class="secondary-btn" id="resumeJob" disabled>Retomar</button>
+          <button class="danger-btn" id="cancelJob" disabled>Cancelar</button>
+        </div>
+      </div>
+
+      <div id="adaptiveBanner" class="adaptive-banner hidden">Proteção adaptativa ativa: a taxa foi reduzida para preservar a API.</div>
+
+      <div class="metric-grid mass-metrics">
+        <article class="metric-card"><span>Processados</span><strong id="jProcessed">0</strong><small id="jTotal">de 0</small></article>
+        <article class="metric-card pending"><span>Restantes</span><strong id="jRemaining">0</strong><small>na fila deste trabalho</small></article>
+        <article class="metric-card success"><span>Sucessos</span><strong id="jSuccess">0</strong><small id="jSuccessRate">0%</small></article>
+        <article class="metric-card danger"><span>Erros</span><strong id="jErrors">0</strong><small>permanentes/transitórios</small></article>
+        <article class="metric-card warning"><span>HTTP 429</span><strong id="j429">0</strong><small id="jCooldown">sem resfriamento</small></article>
+        <article class="metric-card"><span>Ritmo efetivo</span><strong id="jRps">0</strong><small>requisições/s</small></article>
+        <article class="metric-card"><span>Resposta média</span><strong id="jAverage">0 ms</strong><small>tempo da API</small></article>
+        <article class="metric-card"><span>Previsão</span><strong id="jEta">—</strong><small>tempo restante</small></article>
+      </div>
+
+      <div class="robot-heading">
+        <div><p class="kicker">Atividade ao vivo</p><h3>Robôs em operação</h3></div>
+        <span>Atualização leve: 2 vezes por segundo</span>
+      </div>
+      <div id="robotGrid" class="robot-grid"></div>
+    </section>
+
+    <section id="results" class="view">
+      <div class="section-heading">
+        <div><p class="kicker">Paginação no servidor</p><h2>Registros</h2></div>
+      </div>
+      <div class="panel">
+        <div class="filter-row">
+          <select id="recordStatus">
+            <option value="TODOS">Todos os status</option>
+            <option>PENDENTE</option><option>EM_PROCESSAMENTO</option>
+            <option>AGUARDANDO_RETRY</option><option>CONSULTADO</option>
+            <option>ERRO_PERMANENTE</option>
+          </select>
+          <input id="recordSearch" placeholder="Buscar CEP ou número">
+          <button class="secondary-btn" id="searchRecords">Buscar</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>CEP</th><th>Número</th><th>Status</th><th>UF</th><th>Cidade</th><th>Resultado</th><th>HTTP</th></tr></thead>
+            <tbody id="recordRows"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button id="prevPage" class="ghost-btn">Anterior</button>
+          <span id="pageLabel">Página 1</span>
+          <button id="nextPage" class="ghost-btn">Próxima</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="export" class="view">
+      <div class="section-heading">
+        <div><p class="kicker">Geração em segundo plano</p><h2>Exportar resultados</h2></div>
+      </div>
+      <div class="panel form-panel">
+        <div class="form-grid four">
+          <label>UF<select id="exportUf"><option value="">Todas</option></select></label>
+          <label>Cidade<select id="exportCidade"><option value="">Todas</option></select></label>
+          <label>Tecnologia<select id="exportTech"><option value="">Todas</option></select></label>
+          <label>Status<select id="exportStatus"><option value="">Todos</option></select></label>
+        </div>
+        <button class="primary-btn" id="exportButton">Preparar CSV</button>
+        <div id="exportResult" class="inline-result"></div>
+      </div>
+    </section>
+
+    <section id="settings" class="view">
+      <div class="section-heading">
+        <div><p class="kicker">Limites padrão</p><h2>Configurações</h2></div>
+      </div>
+      <div class="panel form-panel">
+        <div class="form-grid two">
+          <label>Threads padrão<input id="settingsThreads" type="number" min="1" max="10"></label>
+          <label>Requisições por segundo padrão<input id="settingsRps" type="number" min="0.1" max="1000" step="0.1"></label>
+          <label>Espera mínima padrão por robô (ms)<input id="settingsRobotDelay" type="number" min="0" max="60000" step="100"></label>
+        </div>
+        <label class="check-line"><input id="settingsAdaptive" type="checkbox"><span>Ativar proteção adaptativa por padrão</span></label>
+        <div class="key-panel"><span>Chaves disponíveis</span><div id="keyList"></div></div>
+        <button class="primary-btn" id="saveSettings">Salvar configurações</button>
+        <div id="settingsResult" class="inline-result"></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
